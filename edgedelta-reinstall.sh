@@ -1508,6 +1508,14 @@ finalize_installation() {
 
     case "$INIT_SYSTEM" in
         systemd)
+            # Clean up any non-symlink service files in target.wants directories
+            # (systemctl enable requires these to be symlinks, not copies)
+            local wants_file="/etc/systemd/system/multi-user.target.wants/edgedelta.service"
+            if [[ -f "$wants_file" && ! -L "$wants_file" ]]; then
+                log_info "Removing non-symlink service file from multi-user.target.wants"
+                rm -f "$wants_file"
+            fi
+
             systemctl daemon-reload
             systemctl enable edgedelta
 
