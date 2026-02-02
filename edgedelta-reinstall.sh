@@ -1311,7 +1311,7 @@ install_edgedelta() {
                 log_warn "Could not set SELinux context on service file"
             fi
 
-            chmod 644 "$service_dest"
+            chmod 755 "$service_dest"
             log_success "Service file restored to: $service_dest"
         else
             log_error "No backup service file available to restore"
@@ -1443,6 +1443,7 @@ restore_override_files() {
         fi
 
         mkdir -p "$RESTORE_OVERRIDE_DIR"
+        chmod 751 "$RESTORE_OVERRIDE_DIR"
 
         for override_file in "$RESTORE_SUBDIR/overrides"/*.conf; do
             if [[ -f "$override_file" ]]; then
