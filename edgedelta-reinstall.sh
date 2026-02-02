@@ -1203,6 +1203,82 @@ install_edgedelta() {
 
     rm -f "$INSTALL_SCRIPT"
 
+    # Check if binary was actually installed
+    if [[ ! -f "${TARGET_PATH}/edgedelta" ]]; then
+        log_warn "EdgeDelta binary not found after installer ran"
+        log_info "Attempting direct binary download as fallback..."
+
+        # Detect architecture
+        local arch
+        arch=$(uname -m)
+        case "$arch" in
+            x86_64)  arch="amd64" ;;
+            aarch64) arch="arm64" ;;
+            armv7l)  arch="arm" ;;
+        esac
+
+        # Determine version to download
+        local version="${ARG_AGENT_VERSION:-latest}"
+        local download_url=""
+
+        if [[ "$version" == "latest" ]]; then
+            # Get latest version from release endpoint
+            download_url="https://release.edgedelta.com/release/edgedelta-linux-${arch}.tar.gz"
+        else
+            download_url="https://release.edgedelta.com/release/v${version}/edgedelta-linux-${arch}.tar.gz"
+        fi
+
+        log_info "Downloading from: $download_url"
+
+        # Create target directory if needed
+        mkdir -p "$TARGET_PATH"
+
+        # Download and extract
+        local tmp_tar=$(mktemp)
+        if curl -sL "$download_url" -o "$tmp_tar" && [[ -s "$tmp_tar" ]]; then
+            # Check if it's a valid tar file
+            if file "$tmp_tar" | grep -q "gzip"; then
+                tar -xzf "$tmp_tar" -C "$TARGET_PATH" 2>/dev/null || \
+                tar -xzf "$tmp_tar" -C "$TARGET_PATH" --strip-components=1 2>/dev/null
+
+                if [[ -f "${TARGET_PATH}/edgedelta" ]]; then
+                    chmod +x "${TARGET_PATH}/edgedelta"
+                    log_success "Binary downloaded and extracted successfully"
+
+                    # Set SELinux context on binary
+                    if [[ "$HAS_SELINUX" == true ]]; then
+                        log_info "Setting SELinux context on binary..."
+                        chcon -t bin_t "${TARGET_PATH}/edgedelta" 2>/dev/null || \
+                        chcon -t unconfined_exec_t "${TARGET_PATH}/edgedelta" 2>/dev/null || true
+                    fi
+
+                    # Create API key file
+                    if [[ -n "$API_KEY" ]]; then
+                        echo "$API_KEY" > "${TARGET_PATH}/apikey"
+                        chmod 600 "${TARGET_PATH}/apikey"
+                        log_info "API key file created"
+                    fi
+                else
+                    log_error "Binary extraction failed - edgedelta not found in archive"
+                    log_error "You may need to manually download from: $download_url"
+                    rm -f "$tmp_tar"
+                    return 1
+                fi
+            else
+                log_error "Downloaded file is not a valid gzip archive"
+                log_error "Download URL may be incorrect or server returned an error"
+                rm -f "$tmp_tar"
+                return 1
+            fi
+        else
+            log_error "Failed to download EdgeDelta binary"
+            log_error "URL: $download_url"
+            rm -f "$tmp_tar"
+            return 1
+        fi
+        rm -f "$tmp_tar"
+    fi
+
     # Check if service file was created (SELinux on RHEL 9 may block this)
     local service_created=false
     for path in "${SERVICE_FILE_PATHS[@]}"; do
@@ -1371,6 +1447,8 @@ restore_override_files() {
         for override_file in "$RESTORE_SUBDIR/overrides"/*.conf; do
             if [[ -f "$override_file" ]]; then
                 cp "$override_file" "$RESTORE_OVERRIDE_DIR/"
+                # Systemd unit files must be world-readable (644)
+                chmod 644 "$RESTORE_OVERRIDE_DIR/$(basename "$override_file")"
                 log_info "Restored: $(basename "$override_file")"
             fi
         done
