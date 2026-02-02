@@ -1179,6 +1179,30 @@ install_edgedelta() {
         fi
     fi
 
+    # Clean up existing service files and overrides before running installer
+    # (installer may fail if these already exist)
+    log_info "Cleaning up existing service files before install..."
+    for path in "${SERVICE_FILE_PATHS[@]}"; do
+        if [[ -f "$path" ]]; then
+            log_info "Removing existing service file: $path"
+            rm -f "$path"
+        fi
+    done
+    # Remove override directory
+    if [[ -d "/etc/systemd/system/edgedelta.service.d" ]]; then
+        log_info "Removing existing override directory"
+        rm -rf "/etc/systemd/system/edgedelta.service.d"
+    fi
+    # Remove symlink from multi-user.target.wants
+    if [[ -e "/etc/systemd/system/multi-user.target.wants/edgedelta.service" ]]; then
+        log_info "Removing existing service symlink"
+        rm -f "/etc/systemd/system/multi-user.target.wants/edgedelta.service"
+    fi
+    # Reload systemd to pick up the removals
+    if [[ "$INIT_SYSTEM" == "systemd" ]]; then
+        systemctl daemon-reload 2>/dev/null || true
+    fi
+
     log_info "Downloading EdgeDelta install script..."
     INSTALL_SCRIPT=$(mktemp)
     curl -sL https://release.edgedelta.com/release/install.sh -o "$INSTALL_SCRIPT"
