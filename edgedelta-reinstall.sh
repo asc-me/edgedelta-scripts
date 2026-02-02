@@ -429,6 +429,19 @@ check_os_supported() {
 
 # Find the service file, falling back to backup from a previous run
 find_service_file() {
+    # On systems with SELinux (like RHEL 9), file tests may fail even if the file exists
+    # Use systemctl to ask systemd directly where the service file is located
+    if [[ "$INIT_SYSTEM" == "systemd" ]]; then
+        local systemd_path
+        systemd_path=$(systemctl show edgedelta -p FragmentPath --value 2>/dev/null)
+        if [[ -n "$systemd_path" && "$systemd_path" != "" ]]; then
+            SERVICE_FILE="$systemd_path"
+            log_info "Found service file via systemctl: $SERVICE_FILE"
+            return 0
+        fi
+    fi
+
+    # Fall back to checking standard paths
     for path in "${SERVICE_FILE_PATHS[@]}"; do
         if [[ -f "$path" ]]; then
             SERVICE_FILE="$path"
@@ -1176,6 +1189,47 @@ install_edgedelta() {
     eval "$install_env bash \"$INSTALL_SCRIPT\""
 
     rm -f "$INSTALL_SCRIPT"
+
+    # Check if service file was created (SELinux on RHEL 9 may block this)
+    local service_created=false
+    for path in "${SERVICE_FILE_PATHS[@]}"; do
+        if [[ -f "$path" ]]; then
+            service_created=true
+            break
+        fi
+    done
+
+    if [[ "$service_created" == false && "$INIT_SYSTEM" == "systemd" ]]; then
+        log_warn "Installer did not create service file (likely blocked by SELinux)"
+        log_info "Restoring service file from backup..."
+
+        if [[ -f "$RESTORE_SUBDIR/edgedelta.service" ]]; then
+            # Copy backed-up service file to systemd directory
+            local service_dest="/etc/systemd/system/edgedelta.service"
+            cp "$RESTORE_SUBDIR/edgedelta.service" "$service_dest"
+
+            # Update paths in the service file if install path changed
+            if [[ -n "$TARGET_PATH" ]]; then
+                sed -i "s|ExecStart=.*|ExecStart=${TARGET_PATH}/edgedelta|" "$service_dest"
+                sed -i "s|WorkingDirectory=.*|WorkingDirectory=${TARGET_PATH}|" "$service_dest"
+            fi
+
+            # Set correct SELinux context for systemd unit file
+            if [[ "$HAS_SELINUX" == true ]]; then
+                log_info "Setting SELinux context on service file..."
+                restorecon -v "$service_dest" 2>/dev/null || \
+                chcon -t systemd_unit_file_t "$service_dest" 2>/dev/null || \
+                log_warn "Could not set SELinux context on service file"
+            fi
+
+            chmod 644 "$service_dest"
+            log_success "Service file restored to: $service_dest"
+        else
+            log_error "No backup service file available to restore"
+            log_error "You may need to manually create /etc/systemd/system/edgedelta.service"
+        fi
+    fi
+
     log_success "EdgeDelta agent installed"
 }
 
