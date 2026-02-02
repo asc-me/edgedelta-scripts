@@ -48,6 +48,7 @@ ARG_INSTALL_PATH=""             # Override install path
 ARG_FORCE_PATH_PROMPT=false     # Force path selection prompt
 ARG_FORCE_BACKUP_PROMPT=false   # Force backup selection prompt
 ARG_AGENT_VERSION=""            # Specific agent version to install
+ARG_RESTORE_MODE=false          # Restore-only mode (skip backup/uninstall)
 
 show_help() {
     cat <<EOF
@@ -65,6 +66,8 @@ Options:
                     (even if original path already has 'edgedelta')
   -r                Force backup selection prompt during reinstall
                     (skips auto-selection of best backup)
+  -restore          Restore-only mode: skip backup/uninstall phases
+                    and go directly to install from existing backup
   -v <version>      Install specific agent version during reinstall
                     (e.g., 2.12.0, 2.12.0-rc.48, latest)
   -h, --help        Show this help message
@@ -93,6 +96,12 @@ Examples:
 
   # Combine options
   sudo $0 -api_key "your-key" -p /custom/path -v 2.12.0
+
+  # Restore from existing backup (skip backup/uninstall)
+  sudo $0 -restore
+
+  # Restore with specific version
+  sudo $0 -restore -v 2.12.0
 
 EOF
     exit 0
@@ -123,6 +132,10 @@ parse_args() {
                 ;;
             -r)
                 ARG_FORCE_BACKUP_PROMPT=true
+                shift
+                ;;
+            -restore)
+                ARG_RESTORE_MODE=true
                 shift
                 ;;
             -v)
@@ -1534,10 +1547,11 @@ main() {
     print_os_info
 
     # Display any command-line overrides
-    if [[ -n "$ARG_API_KEY" || -n "$ARG_INSTALL_PATH" || "$ARG_FORCE_PATH_PROMPT" == true || "$ARG_FORCE_BACKUP_PROMPT" == true || -n "$ARG_AGENT_VERSION" ]]; then
+    if [[ -n "$ARG_API_KEY" || -n "$ARG_INSTALL_PATH" || "$ARG_FORCE_PATH_PROMPT" == true || "$ARG_FORCE_BACKUP_PROMPT" == true || -n "$ARG_AGENT_VERSION" || "$ARG_RESTORE_MODE" == true ]]; then
         echo ""
         echo "Command-line overrides:"
         echo "──────────────────────────────────────────"
+        [[ "$ARG_RESTORE_MODE" == true ]] && echo "  Mode:           RESTORE ONLY"
         [[ -n "$ARG_API_KEY" ]] && echo "  API Key:        (provided, ${#ARG_API_KEY} chars)"
         [[ -n "$ARG_INSTALL_PATH" ]] && echo "  Install Path:   $ARG_INSTALL_PATH"
         [[ "$ARG_FORCE_PATH_PROMPT" == true ]] && echo "  Path Prompt:    forced"
@@ -1554,6 +1568,43 @@ main() {
 
     # Ensure base backup dir exists for state file
     mkdir -p "$BACKUP_DIR"
+
+    # ── Restore-only mode ──────────────────────────────────────────────────
+    if [[ "$ARG_RESTORE_MODE" == true ]]; then
+        echo ""
+        log_info "=== RESTORE MODE ==="
+        log_info "Skipping backup and uninstall phases"
+        echo ""
+
+        # Select backup to restore from
+        select_backup
+        if [[ -z "$RESTORE_SUBDIR" ]]; then
+            log_error "No backup found to restore from"
+            log_error "Run the script without -restore first to create a backup"
+            exit 1
+        fi
+
+        # Let the user choose the installation path
+        select_install_path
+
+        # Run install and restore
+        install_edgedelta
+        update_service_file_paths
+        restore_environment_file
+        restore_override_files
+        finalize_installation
+
+        echo ""
+        log_success "EdgeDelta restore complete!"
+        echo ""
+        echo "Useful commands:"
+        echo "  Check status:  systemctl status edgedelta"
+        echo "  View logs:     journalctl -u edgedelta -f"
+        echo "  Restart:       systemctl restart edgedelta"
+        echo ""
+
+        exit 0
+    fi
 
     # Check for a previous incomplete run
     detect_previous_run

@@ -41,6 +41,7 @@ sudo ./edgedelta-reinstall.sh [OPTIONS]
 | `-p <path>` | Set custom install path (skips path selection prompt) |
 | `-p` | Force install path prompt (even if original path has 'edgedelta') |
 | `-r` | Force backup selection prompt (skips auto-selection) |
+| `-restore` | Restore-only mode: skip backup/uninstall, install from existing backup |
 | `-v <version>` | Install specific agent version (e.g., `2.12.0`, `2.12.0-rc.48`) |
 | `-h, --help` | Show help message |
 
@@ -70,6 +71,15 @@ sudo ./edgedelta-reinstall.sh -v 2.12.0-rc.48
 
 # Combine multiple options
 sudo ./edgedelta-reinstall.sh -api_key "your-key" -p /custom/path -v 2.12.0
+
+# Restore from existing backup (skip backup/uninstall phases)
+sudo ./edgedelta-reinstall.sh -restore
+
+# Restore with a specific version
+sudo ./edgedelta-reinstall.sh -restore -v 2.12.0
+
+# Restore with manual backup selection
+sudo ./edgedelta-reinstall.sh -restore -r
 ```
 
 ## How It Works
@@ -104,6 +114,26 @@ sudo ./edgedelta-reinstall.sh -api_key "your-key" -p /custom/path -v 2.12.0
 6. **Restores configs** - Copies back environment and override files
 7. **Configures SELinux** - Disables enforcement for EdgeDelta binary
 8. **Starts service** - Enables and starts the EdgeDelta service
+
+### Restore Mode (-restore)
+
+Use restore mode when:
+- A previous reinstall attempt failed partway through (e.g., installer didn't complete)
+- You need to re-run just the installation phase without creating a new backup
+- The EdgeDelta binary is missing but you have an existing backup
+
+Restore mode:
+1. Skips backup and uninstall phases entirely
+2. Selects an existing backup from `/tmp/edge_delta/`
+3. Runs fresh installation using the official EdgeDelta installer
+4. Restores service file from backup (if installer fails to create one, e.g., on RHEL 9 with SELinux)
+5. Restores environment and override files
+6. Starts the service
+
+```bash
+# After a failed reinstall, retry with restore mode
+sudo ./edgedelta-reinstall.sh -restore
+```
 
 ## Backup Location
 
