@@ -1205,8 +1205,8 @@ install_edgedelta() {
 
     # Check if binary was actually installed
     if [[ ! -f "${TARGET_PATH}/edgedelta" ]]; then
-        log_warn "EdgeDelta binary not found after installer ran"
-        log_info "Attempting direct binary download as fallback..."
+        log_warn "EdgeDelta binary not found after installer ran at: ${TARGET_PATH}/edgedelta"
+        log_info "Attempting platform-specific installer as fallback..."
 
         # Detect architecture
         local arch
@@ -1214,36 +1214,44 @@ install_edgedelta() {
         case "$arch" in
             x86_64)  arch="amd64" ;;
             aarch64) arch="arm64" ;;
-            armv7l)  arch="arm" ;;
+            armv7l)  arch="arm64" ;;
         esac
+        log_info "Detected architecture: $(uname -m) -> $arch"
 
         # Determine version to download
         local version="${ARG_AGENT_VERSION:-latest}"
         local download_url=""
 
+        # EdgeDelta releases are .sh installer scripts
         if [[ "$version" == "latest" ]]; then
-            # Get latest version from release endpoint
-            download_url="https://release.edgedelta.com/release/edgedelta-linux-${arch}.tar.gz"
+            download_url="https://release.edgedelta.com/release/edgedelta-linux-${arch}.sh"
         else
-            download_url="https://release.edgedelta.com/release/v${version}/edgedelta-linux-${arch}.tar.gz"
+            download_url="https://release.edgedelta.com/v${version}/edgedelta-linux-${arch}.sh"
         fi
 
-        log_info "Downloading from: $download_url"
+        log_info "Downloading installer from: $download_url"
 
-        # Create target directory if needed
-        mkdir -p "$TARGET_PATH"
+        # Download the platform-specific installer
+        local tmp_installer=$(mktemp)
+        local http_code
+        http_code=$(curl -sL -w "%{http_code}" "$download_url" -o "$tmp_installer" 2>/dev/null)
 
-        # Download and extract
-        local tmp_tar=$(mktemp)
-        if curl -sL "$download_url" -o "$tmp_tar" && [[ -s "$tmp_tar" ]]; then
-            # Check if it's a valid tar file
-            if file "$tmp_tar" | grep -q "gzip"; then
-                tar -xzf "$tmp_tar" -C "$TARGET_PATH" 2>/dev/null || \
-                tar -xzf "$tmp_tar" -C "$TARGET_PATH" --strip-components=1 2>/dev/null
+        if [[ "$http_code" == "200" && -s "$tmp_installer" ]]; then
+            log_info "Download successful (HTTP $http_code)"
 
+            # Verify it's a shell script
+            if head -1 "$tmp_installer" | grep -q "^#!"; then
+                chmod +x "$tmp_installer"
+                log_info "Running platform-specific installer..."
+
+                # Run the installer with API key and install path
+                ED_API_KEY="$API_KEY" ED_INSTALL_PATH="$TARGET_PATH" bash "$tmp_installer"
+
+                rm -f "$tmp_installer"
+
+                # Check if binary was installed this time
                 if [[ -f "${TARGET_PATH}/edgedelta" ]]; then
-                    chmod +x "${TARGET_PATH}/edgedelta"
-                    log_success "Binary downloaded and extracted successfully"
+                    log_success "Binary installed successfully via platform-specific installer"
 
                     # Set SELinux context on binary
                     if [[ "$HAS_SELINUX" == true ]]; then
@@ -1251,32 +1259,24 @@ install_edgedelta() {
                         chcon -t bin_t "${TARGET_PATH}/edgedelta" 2>/dev/null || \
                         chcon -t unconfined_exec_t "${TARGET_PATH}/edgedelta" 2>/dev/null || true
                     fi
-
-                    # Create API key file
-                    if [[ -n "$API_KEY" ]]; then
-                        echo "$API_KEY" > "${TARGET_PATH}/apikey"
-                        chmod 600 "${TARGET_PATH}/apikey"
-                        log_info "API key file created"
-                    fi
                 else
-                    log_error "Binary extraction failed - edgedelta not found in archive"
-                    log_error "You may need to manually download from: $download_url"
-                    rm -f "$tmp_tar"
+                    log_error "Platform-specific installer also failed to install binary"
+                    log_error "Please check network connectivity and try manually:"
+                    log_error "  curl -sL $download_url | ED_API_KEY=<key> ED_INSTALL_PATH=$TARGET_PATH bash"
                     return 1
                 fi
             else
-                log_error "Downloaded file is not a valid gzip archive"
-                log_error "Download URL may be incorrect or server returned an error"
-                rm -f "$tmp_tar"
+                log_error "Downloaded file is not a valid shell script"
+                log_error "First line: $(head -1 "$tmp_installer")"
+                rm -f "$tmp_installer"
                 return 1
             fi
         else
-            log_error "Failed to download EdgeDelta binary"
+            log_error "Failed to download EdgeDelta installer (HTTP $http_code)"
             log_error "URL: $download_url"
-            rm -f "$tmp_tar"
+            rm -f "$tmp_installer"
             return 1
         fi
-        rm -f "$tmp_tar"
     fi
 
     # Check if service file was created (SELinux on RHEL 9 may block this)
