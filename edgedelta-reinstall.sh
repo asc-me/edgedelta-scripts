@@ -1179,20 +1179,23 @@ install_edgedelta() {
         fi
     fi
 
-    # Clean up existing service files and overrides before running installer
+    # Clean up ALL existing edgedelta files before running installer
     # (installer may fail if these already exist)
-    log_info "Cleaning up existing service files before install..."
+    log_info "Cleaning up existing EdgeDelta files before install..."
+
+    # Remove all edgedelta-related files from common locations
+    find /etc -name '*edgedelta*' -exec rm -rf '{}' + 2>/dev/null || true
+    find /var/log -name '*edgedelta*' -exec rm -rf '{}' + 2>/dev/null || true
+    find /usr/local/etc -name '*edgedelta*' -exec rm -rf '{}' + 2>/dev/null || true
+    find /usr/local/var -name '*edgedelta*' -exec rm -rf '{}' + 2>/dev/null || true
+
+    # Also clean up systemd-specific locations
     for path in "${SERVICE_FILE_PATHS[@]}"; do
         if [[ -f "$path" ]]; then
             log_info "Removing existing service file: $path"
             rm -f "$path"
         fi
     done
-    # Remove override directory
-    if [[ -d "/etc/systemd/system/edgedelta.service.d" ]]; then
-        log_info "Removing existing override directory"
-        rm -rf "/etc/systemd/system/edgedelta.service.d"
-    fi
     # Remove symlink from multi-user.target.wants
     if [[ -e "/etc/systemd/system/multi-user.target.wants/edgedelta.service" ]]; then
         log_info "Removing existing service symlink"
@@ -1203,27 +1206,54 @@ install_edgedelta() {
         systemctl daemon-reload 2>/dev/null || true
     fi
 
-    log_info "Downloading EdgeDelta install script..."
-    INSTALL_SCRIPT=$(mktemp)
-    curl -sL https://release.edgedelta.com/release/install.sh -o "$INSTALL_SCRIPT"
-    chmod +x "$INSTALL_SCRIPT"
+    log_success "Cleanup complete"
 
-    # Build environment variables for the installer
-    local install_env="ED_API_KEY=\"$API_KEY\""
+    # Detect architecture for version-specific downloads
+    local arch
+    arch=$(uname -m)
+    case "$arch" in
+        x86_64)  arch="amd64" ;;
+        aarch64) arch="arm64" ;;
+        armv7l)  arch="arm64" ;;
+    esac
 
-    if [[ "$TARGET_PATH" != "/opt/edgedelta/agent" ]]; then
-        install_env="$install_env ED_INSTALL_PATH=\"$TARGET_PATH\""
+    # Determine OS type for download URL
+    local os_label="linux"
+    if [[ "$OS_TYPE" == "macos" ]]; then
+        os_label="macosx"
     fi
 
     if [[ -n "$ARG_AGENT_VERSION" ]]; then
-        install_env="$install_env VERSION=\"$ARG_AGENT_VERSION\""
+        # Version-specific install: download directly from versioned URL
+        # (the generic install.sh ignores the VERSION variable)
+        local version_url="https://release.edgedelta.com/v${ARG_AGENT_VERSION}/edgedelta-${os_label}-${arch}.sh"
         log_info "Installing EdgeDelta agent version: $ARG_AGENT_VERSION"
-    else
-        log_info "Installing latest EdgeDelta agent version"
-    fi
+        log_info "Downloading from: $version_url"
 
-    log_info "Running EdgeDelta installer..."
-    eval "$install_env bash \"$INSTALL_SCRIPT\""
+        INSTALL_SCRIPT=$(mktemp)
+        curl -sL "$version_url" -o "$INSTALL_SCRIPT"
+        chmod +x "$INSTALL_SCRIPT"
+
+        log_info "Running version-specific installer..."
+        ED_API_KEY="$API_KEY" ED_INSTALL_PATH="$TARGET_PATH" bash "$INSTALL_SCRIPT"
+    else
+        # Latest version: use the generic install.sh
+        log_info "Installing latest EdgeDelta agent version"
+        log_info "Downloading EdgeDelta install script..."
+
+        INSTALL_SCRIPT=$(mktemp)
+        curl -sL https://release.edgedelta.com/release/install.sh -o "$INSTALL_SCRIPT"
+        chmod +x "$INSTALL_SCRIPT"
+
+        # Build environment variables for the installer
+        local install_env="ED_API_KEY=\"$API_KEY\""
+        if [[ "$TARGET_PATH" != "/opt/edgedelta/agent" ]]; then
+            install_env="$install_env ED_INSTALL_PATH=\"$TARGET_PATH\""
+        fi
+
+        log_info "Running EdgeDelta installer..."
+        eval "$install_env bash \"$INSTALL_SCRIPT\""
+    fi
 
     rm -f "$INSTALL_SCRIPT"
 
@@ -1277,11 +1307,11 @@ install_edgedelta() {
                 if [[ -f "${TARGET_PATH}/edgedelta" ]]; then
                     log_success "Binary installed successfully via platform-specific installer"
 
-                    # Set SELinux context on binary
+                    # Set correct SELinux context on install path
                     if [[ "$HAS_SELINUX" == true ]]; then
-                        log_info "Setting SELinux context on binary..."
-                        chcon -t bin_t "${TARGET_PATH}/edgedelta" 2>/dev/null || \
-                        chcon -t unconfined_exec_t "${TARGET_PATH}/edgedelta" 2>/dev/null || true
+                        log_info "Restoring SELinux file contexts..."
+                        restorecon -Rv "${TARGET_PATH}" 2>/dev/null || \
+                        chcon -t bin_t "${TARGET_PATH}/edgedelta" 2>/dev/null || true
                     fi
                 else
                     log_error "Platform-specific installer also failed to install binary"
@@ -1500,21 +1530,21 @@ configure_security() {
         selinux_status=$(getenforce 2>/dev/null || echo "Disabled")
 
         if [[ "$selinux_status" != "Disabled" ]]; then
-            log_info "SELinux is $selinux_status - disabling enforcement for EdgeDelta..."
+            log_info "SELinux is $selinux_status - restoring correct file contexts..."
 
-            if [[ -f "${target_path}/edgedelta" ]]; then
-                log_info "Setting EdgeDelta binary to unconfined execution..."
-                chcon -t unconfined_exec_t "${target_path}/edgedelta" 2>/dev/null || {
-                    log_warn "chcon failed, trying semanage..."
-                    if command -v semanage &>/dev/null; then
-                        semanage fcontext -a -t unconfined_exec_t "${target_path}/edgedelta" 2>/dev/null || \
-                        semanage fcontext -m -t unconfined_exec_t "${target_path}/edgedelta" 2>/dev/null || true
-                        restorecon -v "${target_path}/edgedelta" 2>/dev/null || true
+            # Use restorecon to set the correct SELinux context for the install path
+            # This sets bin_t on the binary (required for systemd to execute it)
+            if [[ -d "${target_path}" ]]; then
+                log_info "Running restorecon on ${target_path}..."
+                restorecon -Rv "${target_path}" 2>/dev/null || {
+                    log_warn "restorecon failed, trying chcon..."
+                    if [[ -f "${target_path}/edgedelta" ]]; then
+                        chcon -t bin_t "${target_path}/edgedelta" 2>/dev/null || true
                     fi
                 }
-                log_success "SELinux enforcement disabled for EdgeDelta"
+                log_success "SELinux file contexts restored for EdgeDelta"
             else
-                log_warn "EdgeDelta binary not found at ${target_path}/edgedelta"
+                log_warn "EdgeDelta install path not found at ${target_path}"
             fi
         fi
     fi
