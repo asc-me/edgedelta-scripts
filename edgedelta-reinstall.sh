@@ -313,11 +313,13 @@ setup_os_paths() {
 
             # LaunchDaemon paths for macOS
             SERVICE_FILE_PATHS=(
+                "/Library/LaunchDaemons/edgedelta.plist"
                 "/Library/LaunchDaemons/com.edgedelta.agent.plist"
+                "$HOME/Library/LaunchAgents/edgedelta.plist"
                 "$HOME/Library/LaunchAgents/com.edgedelta.agent.plist"
             )
             OVERRIDE_DIR=""  # macOS doesn't use override directories
-            LAUNCHD_LABEL="com.edgedelta.agent"
+            LAUNCHD_LABEL="edgedelta"
             ;;
         *)
             # Defaults
@@ -470,7 +472,7 @@ find_service_file() {
             backup_service_name="edgedelta.service"
             ;;
         macos)
-            backup_service_name="com.edgedelta.agent.plist"
+            backup_service_name="edgedelta.plist"
             ;;
         *)
             backup_service_name="edgedelta.service"
@@ -605,7 +607,7 @@ backup_service_file() {
     local backup_name
     case "$OS_TYPE" in
         macos)
-            backup_name="com.edgedelta.agent.plist"
+            backup_name="edgedelta.plist"
             ;;
         *)
             backup_name="edgedelta.service"
